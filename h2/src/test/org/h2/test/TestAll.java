@@ -237,6 +237,9 @@ import org.h2.util.Task;
 import org.h2.util.ThreadDeadlockDetector;
 import org.h2.util.Utils;
 
+// 560 additions
+import org.h2.test.column.TestColumnOrientedTableEngine;
+
 /**
  * The main test application. JUnit is not used because loops are easier to
  * write in regular java applications (most tests are ran multiple times using
@@ -865,6 +868,10 @@ kill -9 `jps -l | grep "org.h2.test." | cut -d " " -f 1`
 
         runAddedTests(1);
 
+	// CSC 560 - Column-oriented table store
+        addTest(new TestColumnOrientedTableEngine());
+        runAddedTests();
+	
         afterTest();
     }
 
