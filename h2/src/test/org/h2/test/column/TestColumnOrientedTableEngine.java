@@ -18,6 +18,10 @@ import java.util.List;
 import java.util.Random;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.LinkedHashMap;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.Callable;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -65,6 +69,606 @@ public class TestColumnOrientedTableEngine extends TestBase {
         testBatchedJoin();
     }
 
+    /**
+     * A table engine that uses column-oriented table storage. All values for a column are stored contiguously (by default, H@ uses row/tuple oriented structure)
+     */
+    public static class ColumnOrientedTableEngine implements TableEngine {
+
+        static ColumnOrientedTable created;
+
+        @Override
+        public Table createTable(CreateTableData data) {
+            return created = new ColumnOrientedTable(data);
+        }
+    }
+
+    /**
+     * A table that stored data in column0oriented fashion.
+     */
+    private static class ColumnOrientedTable extends TableBase {
+        int dataModificationId;
+
+        ArrayList<Index> indexes;
+
+        ColumnOrientedIndex scan = new ColumnOrientedIndex(this, "scan",
+                IndexColumn.wrap(getColumns()), IndexType.createScan(false)) {
+            @Override
+            public double getCost(Session session, int[] masks,
+                    TableFilter[] filters, int filter, SortOrder sortOrder,
+                    HashSet<Column> allColumnsSet) {
+                doTests(session);
+                return getCostRangeIndex(masks, getRowCount(session), filters,
+                        filter, sortOrder, true, allColumnsSet);
+            }
+        };
+
+        ColumnOrientedTable(CreateTableData data) {
+            super(data);
+        }
+
+        @Override
+        public void checkRename() {
+            // No-op.
+        }
+
+        @Override
+        public void unlock(Session s) {
+            // No-op.
+        }
+
+        @Override
+        public void truncate(Session session) {
+            if (indexes != null) {
+                for (Index index : indexes) {
+                    index.truncate(session);
+                }
+            } else {
+                scan.truncate(session);
+            }
+            dataModificationId++;
+        }
+
+        @Override
+        public void removeRow(Session session, Row row) {
+            if (indexes != null) {
+                for (Index index : indexes) {
+                    index.remove(session, row);
+                }
+            } else {
+                scan.remove(session, row);
+            }
+            dataModificationId++;
+        }
+
+        @Override
+        public void addRow(Session session, Row row) {
+            if (indexes != null) {
+                for (Index index : indexes) {
+                    index.add(session, row);
+                }
+            } else {
+                scan.add(session, row);
+            }
+            dataModificationId++;
+        }
+
+        @Override
+        public Index addIndex(Session session, String indexName, int indexId, IndexColumn[] cols,
+                IndexType indexType, boolean create, String indexComment) {
+            if (indexes == null) {
+                indexes = New.arrayList(2);
+                // Scan must be always at 0.
+                indexes.add(scan);
+            }
+            Index index = new ColumnOrientedIndex(this, indexName, cols, indexType);
+            for (SearchRow row : scan.set) {
+                index.add(session, (Row) row);
+            }
+            indexes.add(index);
+            dataModificationId++;
+            setModified();
+            return index;
+        }
+
+        @Override
+        public boolean lock(Session session, boolean exclusive, boolean forceLockEvenInMvcc) {
+            return true;
+        }
+
+        @Override
+        public boolean isLockedExclusively() {
+            return false;
+        }
+
+        @Override
+        public boolean isDeterministic() {
+            return false;
+        }
+
+        @Override
+        public Index getUniqueIndex() {
+            return null;
+        }
+
+        @Override
+        public TableType getTableType() {
+            return TableType.EXTERNAL_TABLE_ENGINE;
+        }
+
+        @Override
+        public Index getScanIndex(Session session) {
+            return scan;
+        }
+
+        @Override
+        public long getRowCountApproximation() {
+            return getScanIndex(null).getRowCountApproximation();
+        }
+
+        @Override
+        public long getRowCount(Session session) {
+            return scan.getRowCount(session);
+        }
+
+        @Override
+        public long getMaxDataModificationId() {
+            return dataModificationId;
+        }
+
+        @Override
+        public ArrayList<Index> getIndexes() {
+            return indexes;
+        }
+
+        @Override
+        public long getDiskSpaceUsed() {
+            return 0;
+        }
+
+        @Override
+        public void close(Session session) {
+            // No-op.
+        }
+
+        @Override
+        public void checkSupportAlter() {
+            // No-op.
+        }
+
+        @Override
+        public boolean canGetRowCount() {
+            return true;
+        }
+
+        @Override
+        public boolean canDrop() {
+            return true;
+        }
+    }
+
+    /**
+     * An index that internally uses a tree set.
+     */
+    private static class ColumnOrientedIndex extends BaseIndex implements Comparator<SearchRow> {
+        /**
+         * Executor service to test batched joins.
+         */
+        static ExecutorService exec;
+
+        static AtomicInteger lookupBatches = new AtomicInteger();
+
+        int preferredBatchSize;
+
+        final TreeSet<SearchRow> set = new TreeSet<>(this);
+
+	final Map<Long,Long> keyToColumnarIndex = new HashMap<Long,Long>();   // allows conversion of a row key to an index in columnStore
+	final Map<String,ArrayList> columnStore = new LinkedHashMap<String,ArrayList>();
+	
+        ColumnOrientedIndex(Table t, String name, IndexColumn[] cols, IndexType type) {
+            initBaseIndex(t, 0, name, cols, type);
+        }
+
+        @Override
+        public int compare(SearchRow o1, SearchRow o2) {
+            int res = compareRows(o1, o2);
+            if (res == 0) {
+                if (o1.getKey() == Long.MAX_VALUE || o2.getKey() == Long.MIN_VALUE) {
+                    res = 1;
+                } else if (o1.getKey() == Long.MIN_VALUE || o2.getKey() == Long.MAX_VALUE) {
+                    res = -1;
+                }
+            }
+            return res;
+        }
+
+        @Override
+        public IndexLookupBatch createLookupBatch(TableFilter[] filters, int f) {
+            final TableFilter filter = filters[f];
+            assert0(filter.getMasks() != null || "scan".equals(getName()), "masks");
+            final int preferredSize = preferredBatchSize;
+            if (preferredSize == 0) {
+                return null;
+            }
+            lookupBatches.incrementAndGet();
+            return new IndexLookupBatch() {
+                List<SearchRow> searchRows = New.arrayList();
+
+                @Override
+                public String getPlanSQL() {
+                    return "test";
+                }
+
+                @Override public boolean isBatchFull() {
+                    return searchRows.size() >= preferredSize * 2;
+                }
+
+                @Override
+                public List<Future<Cursor>> find() {
+                    List<Future<Cursor>> res = findBatched(filter, searchRows);
+                    searchRows.clear();
+                    return res;
+                }
+
+                @Override
+                public boolean addSearchRows(SearchRow first, SearchRow last) {
+                    assert !isBatchFull();
+                    searchRows.add(first);
+                    searchRows.add(last);
+                    return true;
+                }
+
+                @Override
+                public void reset(boolean beforeQuery) {
+                    searchRows.clear();
+                }
+            };
+        }
+
+        public List<Future<Cursor>> findBatched(final TableFilter filter,
+                List<SearchRow> firstLastPairs) {
+            ArrayList<Future<Cursor>> result = New.arrayList(firstLastPairs.size());
+            final Random rnd = new Random();
+            for (int i = 0; i < firstLastPairs.size(); i += 2) {
+                final SearchRow first = firstLastPairs.get(i);
+                final SearchRow last = firstLastPairs.get(i + 1);
+                Future<Cursor> future;
+                if (rnd.nextBoolean()) {
+                    IteratorCursor c = (IteratorCursor) find(filter, first, last);
+                    if (c.it.hasNext()) {
+                        future = new DoneFuture<Cursor>(c);
+                    } else {
+                        // we can return null instead of future of empty cursor
+                        future = null;
+                    }
+                } else {
+                    future = exec.submit(new Callable<Cursor>() {
+                        @Override
+                        public Cursor call() throws Exception {
+                            if (rnd.nextInt(50) == 0) {
+                                Thread.sleep(0, 500);
+                            }
+                            return find(filter, first, last);
+                        }
+                    });
+                }
+                result.add(future);
+            }
+            return result;
+        }
+
+        @Override
+        public void close(Session session) {
+            // No-op.
+        }
+
+        @Override
+        public void add(Session session, Row row) {
+            set.add(row);
+
+	    /*
+	    System.err.println("add() - " + row);
+	    Object[] cols = table.getValues();
+	    int colCount = cols.length;
+	    Object[] vals = row.getValues();
+	    int rowIndex = this.getRowCount(session); //columnStore.first().getValue().size();  // current row count
+	    keyToColumnarIndex.put(row.getKey(), rowIndex);
+	    for (int i = 0; i < colCount; i++) {
+		Column c = cols[i];
+		Object val = vals[i];
+		columnStore.get(c.getName()).add(val);
+
+		System.err.println("add() - " + c + ", " + val + " [" + rowIndex + "]");
+		
+	    }
+	    */
+        }
+
+        @Override
+        public void remove(Session session, Row row) {
+            set.remove(row);
+
+	    /*
+	    // remove entries from each columnar list
+	    int rowIndex = keyToColumnarIndex.get(row.getKey());
+	    for (ArrayList valList : columnStore.values()) {
+		valList.remove(rowIndex);
+	    }
+	    */
+	    
+        }
+
+        private static SearchRow mark(SearchRow row, boolean first) {
+            if (row != null) {
+                // Mark this row to be a search row.
+                row.setKey(first ? Long.MIN_VALUE : Long.MAX_VALUE);
+            }
+            return row;
+        }
+
+        @Override
+        public Cursor find(Session session, SearchRow first, SearchRow last) {
+            Set<SearchRow> subSet;
+            if (first != null && last != null && compareRows(last, first) < 0) {
+                subSet = Collections.emptySet();
+            } else {
+                if (first != null) {
+                    first = set.floor(mark(first, true));
+                }
+                if (last != null) {
+                    last = set.ceiling(mark(last, false));
+                }
+                if (first == null && last == null) {
+                    subSet = set;
+                } else if (first != null) {
+                    if (last != null) {
+                        subSet = set.subSet(first,  true, last, true);
+                    } else {
+                        subSet = set.tailSet(first, true);
+                    }
+                } else if (last != null) {
+                    subSet = set.headSet(last, true);
+                } else {
+                    throw new IllegalStateException();
+                }
+            }
+            return new IteratorCursor(subSet.iterator());
+        }
+
+        private static String alias(SubQueryInfo info) {
+            return info.getFilters()[info.getFilter()].getTableAlias();
+        }
+
+        private void checkInfo(SubQueryInfo info) {
+            if (info.getUpper() == null) {
+                // check 1st level info
+                assert0(info.getFilters().length == 1, "getFilters().length " +
+                        info.getFilters().length);
+                String alias = alias(info);
+                assert0("T5".equals(alias), "alias: " + alias);
+            } else {
+                // check 2nd level info
+                assert0(info.getFilters().length == 2, "getFilters().length " +
+                        info.getFilters().length);
+                String alias = alias(info);
+                assert0("T4".equals(alias), "alias: " + alias);
+                checkInfo(info.getUpper());
+            }
+        }
+
+        protected void doTests(Session session) {
+            if (getTable().getName().equals("SUB_QUERY_TEST")) {
+                checkInfo(session.getSubQueryInfo());
+            } else if (getTable().getName().equals("EXPR_TEST")) {
+                assert0(session.getSubQueryInfo() == null, "select expression");
+            } else if (getTable().getName().equals("EXPR_TEST2")) {
+                String alias = alias(session.getSubQueryInfo());
+                assert0(alias.equals("ZZ"), "select expression sub-query: " + alias);
+                assert0(session.getSubQueryInfo().getUpper() == null, "upper");
+            } else if (getTable().getName().equals("QUERY_EXPR_TEST")) {
+                assert0(session.isPreparingQueryExpression(), "preparing query expression");
+            } else if (getTable().getName().equals("QUERY_EXPR_TEST_NO")) {
+                assert0(!session.isPreparingQueryExpression(), "not preparing query expression");
+            }
+        }
+
+        @Override
+        public double getCost(Session session, int[] masks,
+                TableFilter[] filters, int filter, SortOrder sortOrder,
+                HashSet<Column> allColumnsSet) {
+            doTests(session);
+            return getCostRangeIndex(masks, set.size(), filters, filter,
+                    sortOrder, false, allColumnsSet);
+        }
+
+        @Override
+        public void remove(Session session) {
+            // No-op.
+        }
+
+        @Override
+        public void truncate(Session session) {
+            set.clear();
+        }
+
+        @Override
+        public boolean canGetFirstOrLast() {
+            return true;
+        }
+
+        @Override
+        public Cursor findFirstOrLast(Session session, boolean first) {
+            return new SingleRowCursor((Row)
+                    (set.isEmpty() ? null : first ? set.first() : set.last()));
+        }
+
+        @Override
+        public boolean needRebuild() {
+            return true;
+        }
+
+        @Override
+        public long getRowCount(Session session) {
+            //return set.size();
+	    List<ArrayList> vals = (List<ArrayList>) columnStore.values();
+	    return vals.get(0).size();
+        }
+
+        @Override
+        public long getRowCountApproximation() {
+            return getRowCount(null);
+        }
+
+        @Override
+        public long getDiskSpaceUsed() {
+            return 0;
+        }
+
+        @Override
+        public void checkRename() {
+            // No-op.
+        }
+    }
+
+    /**
+     */
+    private static class IteratorCursor implements Cursor {
+        Iterator<SearchRow> it;
+        private Row current;
+
+        IteratorCursor(Iterator<SearchRow> it) {
+            this.it = it;
+        }
+
+        @Override
+        public boolean previous() {
+            throw DbException.getUnsupportedException("prev");
+        }
+
+        @Override
+        public boolean next() {
+            if (it.hasNext()) {
+                current = (Row) it.next();
+                return true;
+            }
+            current = null;
+            return false;
+        }
+
+        @Override
+        public SearchRow getSearchRow() {
+            return get();
+        }
+
+        @Override
+        public Row get() {
+            return current;
+        }
+
+        @Override
+        public String toString() {
+            return "IteratorCursor->" + current;
+        }
+    }
+
+    /**
+     * A comparator for rows (lists of comparable objects).
+     */
+    private static class RowComparator implements Comparator<List<Object>> {
+        private int[] cols;
+        private boolean descending;
+
+        RowComparator(int... cols) {
+            this.descending = false;
+            this.cols = cols;
+        }
+
+        RowComparator(boolean descending, int... cols) {
+            this.descending = descending;
+            this.cols = cols;
+        }
+
+        @SuppressWarnings("unchecked")
+        @Override
+        public int compare(List<Object> row1, List<Object> row2) {
+            for (int i = 0; i < cols.length; i++) {
+                int col = cols[i];
+                Comparable<Object> o1 = (Comparable<Object>) row1.get(col);
+                Comparable<Object> o2 = (Comparable<Object>) row2.get(col);
+                if (o1 == null) {
+                    return applyDescending(o2 == null ? 0 : -1);
+                }
+                if (o2 == null) {
+                    return applyDescending(1);
+                }
+                int res = o1.compareTo(o2);
+                if (res != 0) {
+                    return applyDescending(res);
+                }
+            }
+            return 0;
+        }
+
+        private int applyDescending(int v) {
+            if (!descending) {
+                return v;
+            }
+            if (v == 0) {
+                return v;
+            }
+            return -v;
+        }
+    }
+
+    /**
+     * A filter for rows (lists of objects).
+     */
+    abstract static class RowFilter {
+
+        /**
+         * Check whether the row needs to be processed.
+         *
+         * @param row the row
+         * @return true if yes
+         */
+        protected abstract boolean accept(List<Object> row);
+
+        /**
+         * Get an integer from a row.
+         *
+         * @param row the row
+         * @param col the column index
+         * @return the value
+         */
+        protected Integer getInt(List<Object> row, int col) {
+            return (Integer) row.get(col);
+        }
+
+        /**
+         * Get a long from a row.
+         *
+         * @param row the row
+         * @param col the column index
+         * @return the value
+         */
+        protected Long getLong(List<Object> row, int col) {
+            return (Long) row.get(col);
+        }
+
+        /**
+         * Get a string from a row.
+         *
+         * @param row the row
+         * @param col the column index
+         * @return the value
+         */
+        protected String getString(List<Object> row, int col) {
+            return (String) row.get(col);
+        }
+
+    }
+
+    
+    
     private void testStatements(Statement stat) throws SQLException {
         assertEquals(stat.executeUpdate("INSERT INTO t1 VALUES(2, 'abc')"), 1);
         assertEquals(stat.executeUpdate("UPDATE t1 SET name = 'abcdef' WHERE id=2"), 1);
@@ -754,571 +1358,5 @@ public class TestColumnOrientedTableEngine extends TestBase {
                 plan.contains(index));
     }
 
-    /**
-     * A table engine that internally uses a tree set.
-     */
-    public static class ColumnOrientedTableEngine implements TableEngine {
-
-        static ColumnOrientedTable created;
-
-        @Override
-        public Table createTable(CreateTableData data) {
-            return created = new ColumnOrientedTable(data);
-        }
-    }
-
-    /**
-     * A table that internally uses a tree set.
-     */
-    private static class ColumnOrientedTable extends TableBase {
-        int dataModificationId;
-
-        ArrayList<Index> indexes;
-
-        ColumnOrientedIndex scan = new ColumnOrientedIndex(this, "scan",
-                IndexColumn.wrap(getColumns()), IndexType.createScan(false)) {
-            @Override
-            public double getCost(Session session, int[] masks,
-                    TableFilter[] filters, int filter, SortOrder sortOrder,
-                    HashSet<Column> allColumnsSet) {
-                doTests(session);
-                return getCostRangeIndex(masks, getRowCount(session), filters,
-                        filter, sortOrder, true, allColumnsSet);
-            }
-        };
-
-        ColumnOrientedTable(CreateTableData data) {
-            super(data);
-        }
-
-        @Override
-        public void checkRename() {
-            // No-op.
-        }
-
-        @Override
-        public void unlock(Session s) {
-            // No-op.
-        }
-
-        @Override
-        public void truncate(Session session) {
-            if (indexes != null) {
-                for (Index index : indexes) {
-                    index.truncate(session);
-                }
-            } else {
-                scan.truncate(session);
-            }
-            dataModificationId++;
-        }
-
-        @Override
-        public void removeRow(Session session, Row row) {
-            if (indexes != null) {
-                for (Index index : indexes) {
-                    index.remove(session, row);
-                }
-            } else {
-                scan.remove(session, row);
-            }
-            dataModificationId++;
-        }
-
-        @Override
-        public void addRow(Session session, Row row) {
-            if (indexes != null) {
-                for (Index index : indexes) {
-                    index.add(session, row);
-                }
-            } else {
-                scan.add(session, row);
-            }
-            dataModificationId++;
-        }
-
-        @Override
-        public Index addIndex(Session session, String indexName, int indexId, IndexColumn[] cols,
-                IndexType indexType, boolean create, String indexComment) {
-            if (indexes == null) {
-                indexes = New.arrayList(2);
-                // Scan must be always at 0.
-                indexes.add(scan);
-            }
-            Index index = new ColumnOrientedIndex(this, indexName, cols, indexType);
-            for (SearchRow row : scan.set) {
-                index.add(session, (Row) row);
-            }
-            indexes.add(index);
-            dataModificationId++;
-            setModified();
-            return index;
-        }
-
-        @Override
-        public boolean lock(Session session, boolean exclusive, boolean forceLockEvenInMvcc) {
-            return true;
-        }
-
-        @Override
-        public boolean isLockedExclusively() {
-            return false;
-        }
-
-        @Override
-        public boolean isDeterministic() {
-            return false;
-        }
-
-        @Override
-        public Index getUniqueIndex() {
-            return null;
-        }
-
-        @Override
-        public TableType getTableType() {
-            return TableType.EXTERNAL_TABLE_ENGINE;
-        }
-
-        @Override
-        public Index getScanIndex(Session session) {
-            return scan;
-        }
-
-        @Override
-        public long getRowCountApproximation() {
-            return getScanIndex(null).getRowCountApproximation();
-        }
-
-        @Override
-        public long getRowCount(Session session) {
-            return scan.getRowCount(session);
-        }
-
-        @Override
-        public long getMaxDataModificationId() {
-            return dataModificationId;
-        }
-
-        @Override
-        public ArrayList<Index> getIndexes() {
-            return indexes;
-        }
-
-        @Override
-        public long getDiskSpaceUsed() {
-            return 0;
-        }
-
-        @Override
-        public void close(Session session) {
-            // No-op.
-        }
-
-        @Override
-        public void checkSupportAlter() {
-            // No-op.
-        }
-
-        @Override
-        public boolean canGetRowCount() {
-            return true;
-        }
-
-        @Override
-        public boolean canDrop() {
-            return true;
-        }
-    }
-
-    /**
-     * An index that internally uses a tree set.
-     */
-    private static class ColumnOrientedIndex extends BaseIndex implements Comparator<SearchRow> {
-        /**
-         * Executor service to test batched joins.
-         */
-        static ExecutorService exec;
-
-        static AtomicInteger lookupBatches = new AtomicInteger();
-
-        int preferredBatchSize;
-
-        final TreeSet<SearchRow> set = new TreeSet<>(this);
-
-        ColumnOrientedIndex(Table t, String name, IndexColumn[] cols, IndexType type) {
-            initBaseIndex(t, 0, name, cols, type);
-        }
-
-        @Override
-        public int compare(SearchRow o1, SearchRow o2) {
-            int res = compareRows(o1, o2);
-            if (res == 0) {
-                if (o1.getKey() == Long.MAX_VALUE || o2.getKey() == Long.MIN_VALUE) {
-                    res = 1;
-                } else if (o1.getKey() == Long.MIN_VALUE || o2.getKey() == Long.MAX_VALUE) {
-                    res = -1;
-                }
-            }
-            return res;
-        }
-
-        @Override
-        public IndexLookupBatch createLookupBatch(TableFilter[] filters, int f) {
-            final TableFilter filter = filters[f];
-            assert0(filter.getMasks() != null || "scan".equals(getName()), "masks");
-            final int preferredSize = preferredBatchSize;
-            if (preferredSize == 0) {
-                return null;
-            }
-            lookupBatches.incrementAndGet();
-            return new IndexLookupBatch() {
-                List<SearchRow> searchRows = New.arrayList();
-
-                @Override
-                public String getPlanSQL() {
-                    return "test";
-                }
-
-                @Override public boolean isBatchFull() {
-                    return searchRows.size() >= preferredSize * 2;
-                }
-
-                @Override
-                public List<Future<Cursor>> find() {
-                    List<Future<Cursor>> res = findBatched(filter, searchRows);
-                    searchRows.clear();
-                    return res;
-                }
-
-                @Override
-                public boolean addSearchRows(SearchRow first, SearchRow last) {
-                    assert !isBatchFull();
-                    searchRows.add(first);
-                    searchRows.add(last);
-                    return true;
-                }
-
-                @Override
-                public void reset(boolean beforeQuery) {
-                    searchRows.clear();
-                }
-            };
-        }
-
-        public List<Future<Cursor>> findBatched(final TableFilter filter,
-                List<SearchRow> firstLastPairs) {
-            ArrayList<Future<Cursor>> result = New.arrayList(firstLastPairs.size());
-            final Random rnd = new Random();
-            for (int i = 0; i < firstLastPairs.size(); i += 2) {
-                final SearchRow first = firstLastPairs.get(i);
-                final SearchRow last = firstLastPairs.get(i + 1);
-                Future<Cursor> future;
-                if (rnd.nextBoolean()) {
-                    IteratorCursor c = (IteratorCursor) find(filter, first, last);
-                    if (c.it.hasNext()) {
-                        future = new DoneFuture<Cursor>(c);
-                    } else {
-                        // we can return null instead of future of empty cursor
-                        future = null;
-                    }
-                } else {
-                    future = exec.submit(new Callable<Cursor>() {
-                        @Override
-                        public Cursor call() throws Exception {
-                            if (rnd.nextInt(50) == 0) {
-                                Thread.sleep(0, 500);
-                            }
-                            return find(filter, first, last);
-                        }
-                    });
-                }
-                result.add(future);
-            }
-            return result;
-        }
-
-        @Override
-        public void close(Session session) {
-            // No-op.
-        }
-
-        @Override
-        public void add(Session session, Row row) {
-            set.add(row);
-        }
-
-        @Override
-        public void remove(Session session, Row row) {
-            set.remove(row);
-        }
-
-        private static SearchRow mark(SearchRow row, boolean first) {
-            if (row != null) {
-                // Mark this row to be a search row.
-                row.setKey(first ? Long.MIN_VALUE : Long.MAX_VALUE);
-            }
-            return row;
-        }
-
-        @Override
-        public Cursor find(Session session, SearchRow first, SearchRow last) {
-            Set<SearchRow> subSet;
-            if (first != null && last != null && compareRows(last, first) < 0) {
-                subSet = Collections.emptySet();
-            } else {
-                if (first != null) {
-                    first = set.floor(mark(first, true));
-                }
-                if (last != null) {
-                    last = set.ceiling(mark(last, false));
-                }
-                if (first == null && last == null) {
-                    subSet = set;
-                } else if (first != null) {
-                    if (last != null) {
-                        subSet = set.subSet(first,  true, last, true);
-                    } else {
-                        subSet = set.tailSet(first, true);
-                    }
-                } else if (last != null) {
-                    subSet = set.headSet(last, true);
-                } else {
-                    throw new IllegalStateException();
-                }
-            }
-            return new IteratorCursor(subSet.iterator());
-        }
-
-        private static String alias(SubQueryInfo info) {
-            return info.getFilters()[info.getFilter()].getTableAlias();
-        }
-
-        private void checkInfo(SubQueryInfo info) {
-            if (info.getUpper() == null) {
-                // check 1st level info
-                assert0(info.getFilters().length == 1, "getFilters().length " +
-                        info.getFilters().length);
-                String alias = alias(info);
-                assert0("T5".equals(alias), "alias: " + alias);
-            } else {
-                // check 2nd level info
-                assert0(info.getFilters().length == 2, "getFilters().length " +
-                        info.getFilters().length);
-                String alias = alias(info);
-                assert0("T4".equals(alias), "alias: " + alias);
-                checkInfo(info.getUpper());
-            }
-        }
-
-        protected void doTests(Session session) {
-            if (getTable().getName().equals("SUB_QUERY_TEST")) {
-                checkInfo(session.getSubQueryInfo());
-            } else if (getTable().getName().equals("EXPR_TEST")) {
-                assert0(session.getSubQueryInfo() == null, "select expression");
-            } else if (getTable().getName().equals("EXPR_TEST2")) {
-                String alias = alias(session.getSubQueryInfo());
-                assert0(alias.equals("ZZ"), "select expression sub-query: " + alias);
-                assert0(session.getSubQueryInfo().getUpper() == null, "upper");
-            } else if (getTable().getName().equals("QUERY_EXPR_TEST")) {
-                assert0(session.isPreparingQueryExpression(), "preparing query expression");
-            } else if (getTable().getName().equals("QUERY_EXPR_TEST_NO")) {
-                assert0(!session.isPreparingQueryExpression(), "not preparing query expression");
-            }
-        }
-
-        @Override
-        public double getCost(Session session, int[] masks,
-                TableFilter[] filters, int filter, SortOrder sortOrder,
-                HashSet<Column> allColumnsSet) {
-            doTests(session);
-            return getCostRangeIndex(masks, set.size(), filters, filter,
-                    sortOrder, false, allColumnsSet);
-        }
-
-        @Override
-        public void remove(Session session) {
-            // No-op.
-        }
-
-        @Override
-        public void truncate(Session session) {
-            set.clear();
-        }
-
-        @Override
-        public boolean canGetFirstOrLast() {
-            return true;
-        }
-
-        @Override
-        public Cursor findFirstOrLast(Session session, boolean first) {
-            return new SingleRowCursor((Row)
-                    (set.isEmpty() ? null : first ? set.first() : set.last()));
-        }
-
-        @Override
-        public boolean needRebuild() {
-            return true;
-        }
-
-        @Override
-        public long getRowCount(Session session) {
-            return set.size();
-        }
-
-        @Override
-        public long getRowCountApproximation() {
-            return getRowCount(null);
-        }
-
-        @Override
-        public long getDiskSpaceUsed() {
-            return 0;
-        }
-
-        @Override
-        public void checkRename() {
-            // No-op.
-        }
-    }
-
-    /**
-     */
-    private static class IteratorCursor implements Cursor {
-        Iterator<SearchRow> it;
-        private Row current;
-
-        IteratorCursor(Iterator<SearchRow> it) {
-            this.it = it;
-        }
-
-        @Override
-        public boolean previous() {
-            throw DbException.getUnsupportedException("prev");
-        }
-
-        @Override
-        public boolean next() {
-            if (it.hasNext()) {
-                current = (Row) it.next();
-                return true;
-            }
-            current = null;
-            return false;
-        }
-
-        @Override
-        public SearchRow getSearchRow() {
-            return get();
-        }
-
-        @Override
-        public Row get() {
-            return current;
-        }
-
-        @Override
-        public String toString() {
-            return "IteratorCursor->" + current;
-        }
-    }
-
-    /**
-     * A comparator for rows (lists of comparable objects).
-     */
-    private static class RowComparator implements Comparator<List<Object>> {
-        private int[] cols;
-        private boolean descending;
-
-        RowComparator(int... cols) {
-            this.descending = false;
-            this.cols = cols;
-        }
-
-        RowComparator(boolean descending, int... cols) {
-            this.descending = descending;
-            this.cols = cols;
-        }
-
-        @SuppressWarnings("unchecked")
-        @Override
-        public int compare(List<Object> row1, List<Object> row2) {
-            for (int i = 0; i < cols.length; i++) {
-                int col = cols[i];
-                Comparable<Object> o1 = (Comparable<Object>) row1.get(col);
-                Comparable<Object> o2 = (Comparable<Object>) row2.get(col);
-                if (o1 == null) {
-                    return applyDescending(o2 == null ? 0 : -1);
-                }
-                if (o2 == null) {
-                    return applyDescending(1);
-                }
-                int res = o1.compareTo(o2);
-                if (res != 0) {
-                    return applyDescending(res);
-                }
-            }
-            return 0;
-        }
-
-        private int applyDescending(int v) {
-            if (!descending) {
-                return v;
-            }
-            if (v == 0) {
-                return v;
-            }
-            return -v;
-        }
-    }
-
-    /**
-     * A filter for rows (lists of objects).
-     */
-    abstract static class RowFilter {
-
-        /**
-         * Check whether the row needs to be processed.
-         *
-         * @param row the row
-         * @return true if yes
-         */
-        protected abstract boolean accept(List<Object> row);
-
-        /**
-         * Get an integer from a row.
-         *
-         * @param row the row
-         * @param col the column index
-         * @return the value
-         */
-        protected Integer getInt(List<Object> row, int col) {
-            return (Integer) row.get(col);
-        }
-
-        /**
-         * Get a long from a row.
-         *
-         * @param row the row
-         * @param col the column index
-         * @return the value
-         */
-        protected Long getLong(List<Object> row, int col) {
-            return (Long) row.get(col);
-        }
-
-        /**
-         * Get a string from a row.
-         *
-         * @param row the row
-         * @param col the column index
-         * @return the value
-         */
-        protected String getString(List<Object> row, int col) {
-            return (String) row.get(col);
-        }
-
-    }
 
 }

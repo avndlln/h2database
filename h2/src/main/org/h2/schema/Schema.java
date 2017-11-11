@@ -658,7 +658,8 @@ public class Schema extends DbObjectBase {
                 }
                 return database.getTableEngine(data.tableEngine).createTable(data);
             }
-            return new RegularTable(data);
+            //return new RegularTable(data);
+	    return new org.h2.column.ColumnarTable(data);
         }
     }
 

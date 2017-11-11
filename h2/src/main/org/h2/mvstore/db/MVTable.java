@@ -101,6 +101,9 @@ public class MVTable extends TableBase {
 
     public MVTable(CreateTableData data, MVTableEngine.Store store) {
         super(data);
+
+	System.err.println("MVTable??");
+	
         nextAnalyze = database.getSettings().analyzeAuto;
         this.store = store;
         this.transactionStore = store.getTransactionStore();

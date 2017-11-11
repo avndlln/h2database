@@ -447,6 +447,9 @@ java org.h2.test.TestAll timer
     private Server server;
 
 
+    // Run CSC 560-only tests
+    public boolean csc560 = true;
+    
     /**
      * Run all tests.
      *
@@ -518,6 +521,9 @@ kill -9 `jps -l | grep "org.h2.test." | cut -d " " -f 1`
             } else if ("vmlens".equals(args[0])) {
                 test.vmlens = true;
                 test.testAll();
+            } else if ("560".equals(args[0])) {
+                test.csc560 = true;
+                test.testAll();		
             } else if ("reopen".equals(args[0])) {
                 System.setProperty("h2.delayWrongPasswordMin", "0");
                 System.setProperty("h2.check2", "false");
@@ -721,6 +727,8 @@ kill -9 `jps -l | grep "org.h2.test." | cut -d " " -f 1`
                 " (" + Utils.getMemoryUsed() + " KB used)");
         beforeTest();
 
+	if (false) {
+	
         // db
         addTest(new TestScriptSimple());
         addTest(new TestScript());
@@ -868,6 +876,8 @@ kill -9 `jps -l | grep "org.h2.test." | cut -d " " -f 1`
 
         runAddedTests(1);
 
+	}
+	
 	// CSC 560 - Column-oriented table store
         addTest(new TestColumnOrientedTableEngine());
         runAddedTests();
@@ -876,6 +886,9 @@ kill -9 `jps -l | grep "org.h2.test." | cut -d " " -f 1`
     }
 
     private void testUnit() {
+
+	if (false) {
+	
         // mv store
         addTest(new TestCacheConcurrentLIRS());
         addTest(new TestCacheLIRS());
@@ -968,6 +981,12 @@ kill -9 `jps -l | grep "org.h2.test." | cut -d " " -f 1`
 
         runAddedTests(1);
 
+	}
+	
+	// CSC 560 - Column-oriented table store
+        addTest(new TestColumnOrientedTableEngine());
+        runAddedTests();
+	
     }
 
     private void addTest(TestBase test) {
