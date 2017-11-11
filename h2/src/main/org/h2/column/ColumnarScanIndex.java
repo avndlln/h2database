@@ -4,8 +4,10 @@ import org.h2.index.ScanIndex;
 import org.h2.table.IndexColumn;
 import org.h2.index.IndexType;
 import org.h2.result.Row;
+import org.h2.result.RowImpl;
 import org.h2.engine.Session;
 import org.h2.index.Cursor;
+import org.h2.value.Value;
 
 import org.h2.index.BaseIndex;
 
@@ -15,6 +17,8 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
+import java.util.LinkedHashMap;
 import org.h2.api.ErrorCode;
 import org.h2.engine.Constants;
 import org.h2.engine.Session;
@@ -32,6 +36,8 @@ import org.h2.util.New;
 import java.util.logging.Logger;
 
     /*
+//HashMap<R, HashMap<C, V>
+
     private class ColumnarList extends ArrayList {
 
 	private Map<String,List> columnStore = new LinkedHashMap<String,List>();
@@ -59,18 +65,22 @@ import java.util.logging.Logger;
 public class ColumnarScanIndex extends BaseIndex {
     Logger log = Logger.getLogger(ColumnarTable.class.getName());
 
-    private long firstFree = -1;
-    private ArrayList<Row> rows = New.arrayList();
-    private final RegularTable tableData;
+    private final ColumnarTable tableData;
     private int rowCountDiff;
     private final HashMap<Integer, Integer> sessionRowCount;
-    private HashSet<Row> delta;
-    private long rowCount;
     
-    public ColumnarScanIndex(RegularTable table, int id, IndexColumn[] columns,
+    private long firstFree = -1;
+    private long rowCount;
+    private HashSet<Row> delta;  // used for MVCC support
+
+    private ArrayList<Row> rows = New.arrayList();  // row-wise storage
+    private String[] columnNames = null;
+    private Map<String,List<Value>> columnStore = new LinkedHashMap<String,List<Value>>();  // columnar storage
+    
+    public ColumnarScanIndex(ColumnarTable table, int id, IndexColumn[] columns,
 			     IndexType indexType) {
 
-	log.info("ColumnarScanIndex()");
+	log.info("ColumnarScanIndex() - table: " + table);
 	
         initBaseIndex(table, id, table.getName() + "_DATA", columns, indexType);
         if (database.isMultiVersion()) {
@@ -88,7 +98,8 @@ public class ColumnarScanIndex extends BaseIndex {
 
     @Override
     public void truncate(Session session) {
-        rows = New.arrayList();
+        //rows = New.arrayList();
+	columnStore = new LinkedHashMap<String,List<Value>>();
         firstFree = -1;
         if (tableData.getContainsLargeObject() && tableData.isPersistData()) {
             database.getLobStorage().removeAllForTable(table.getId());
@@ -113,11 +124,28 @@ public class ColumnarScanIndex extends BaseIndex {
 
     @Override
     public Row getRow(Session session, long key) {
-        return rows.get((int) key);
+        //return rows.get((int) key);
+
+	if (columnNames == null) {
+	    columnNames = (String[]) columnStore.keySet().toArray();
+	}
+
+	// construct a row from our columnar values
+	Value[] data = new Value[columnNames.length];
+	log.fine("getRow() - key: " + key);
+	for (int i = 0; i < columnNames.length; i++) {
+	    data[i] = columnStore.get(columnNames[i]).get((int) key);
+	    log.fine("getRow() - column: " + columnNames[i] + " / " + i + ", val: " + data[i]);
+	}
+
+	Row r = new RowImpl(data, 0 /* memory */);
+	r.setKey(key);
+	return r;
     }
 
     @Override
     public void add(Session session, Row row) {
+	/*
         // in-memory
         if (firstFree == -1) {
             int key = rows.size();
@@ -130,7 +158,10 @@ public class ColumnarScanIndex extends BaseIndex {
             row.setKey(key);
             rows.set((int) key, row);
         }
+	*/
+
         row.setDeleted(false);
+	
         if (database.isMultiVersion()) {
             if (delta == null) {
                 delta = New.hashSet();
@@ -204,8 +235,8 @@ public class ColumnarScanIndex extends BaseIndex {
 
     @Override
     public double getCost(Session session, int[] masks,
-            TableFilter[] filters, int filter, SortOrder sortOrder,
-            HashSet<Column> allColumnsSet) {
+			  TableFilter[] filters, int filter, SortOrder sortOrder,
+			  HashSet<Column> allColumnsSet) {
         return tableData.getRowCountApproximation() + Constants.COST_ROW_OFFSET;
     }
 

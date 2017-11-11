@@ -73,8 +73,6 @@ public class RegularTable extends TableBase {
     public RegularTable(CreateTableData data) {
         super(data);
 
-	System.err.println("RegularTable??");
-	
         nextAnalyze = database.getSettings().analyzeAuto;
         this.isHidden = data.isHidden;
         for (Column col : getColumns()) {

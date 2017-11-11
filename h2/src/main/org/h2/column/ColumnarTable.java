@@ -71,8 +71,7 @@ public class ColumnarTable extends RegularTable {
     public ColumnarTable(CreateTableData data) {
         super(data);
 
-	log.info("ColumnarTable()");
-	System.err.println("[err] ColumnarTable");
+	log.info("ColumnarTable() - table name: " + data.tableName);
 	
         nextAnalyze = database.getSettings().analyzeAuto;
         this.isHidden = data.isHidden;
@@ -89,10 +88,7 @@ public class ColumnarTable extends RegularTable {
             scanIndex = mainIndex;
         } else {
             mainIndex = null;
-            //scanIndex = new ScanIndex(this, data.id,
-            //        IndexColumn.wrap(getColumns()), IndexType.createScan(data.persistData));
-
-	    // custom index implementation
+	    // columnar index implementation
 	    scanIndex = new ColumnarScanIndex(this, data.id,
 					      IndexColumn.wrap(getColumns()), IndexType.createScan(data.persistData));
         }
