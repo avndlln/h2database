@@ -25,7 +25,6 @@ import org.h2.index.NonUniqueHashIndex;
 import org.h2.index.PageBtreeIndex;
 import org.h2.index.PageDataIndex;
 import org.h2.index.PageDelegateIndex;
-import org.h2.index.ScanIndex;
 import org.h2.index.SpatialTreeIndex;
 import org.h2.index.TreeIndex;
 import org.h2.message.DbException;
@@ -89,8 +88,8 @@ public class ColumnarTable extends RegularTable {
         } else {
             mainIndex = null;
 	    // columnar index implementation
-	    scanIndex = new ColumnarScanIndex(this, data.id,
-					      IndexColumn.wrap(getColumns()), IndexType.createScan(data.persistData));
+	    scanIndex = new ColumnarIndex(this, data.id,
+					  IndexColumn.wrap(getColumns()), IndexType.createScan(data.persistData));
         }
         indexes.add(scanIndex);
         traceLock = database.getTrace(Trace.LOCK);

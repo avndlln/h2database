@@ -11,24 +11,23 @@ import org.h2.message.DbException;
 import org.h2.result.Row;
 import org.h2.result.SearchRow;
 import org.h2.index.Cursor;
-import org.h2.index.ScanIndex;
 
 /**
- * The cursor implementation for the columnar scan index.
+ * The cursor implementation for the columnar index.
  */
-public class ColumnarScanCursor implements Cursor {
-    private final ColumnarScanIndex scan;
+public class ColumnarCursor implements Cursor {
+    private final ColumnarIndex theIndex;
     private Row row;
     private final Session session;
     private final boolean multiVersion;
     private Iterator<Row> delta;
 
-    ColumnarScanCursor(Session session, ColumnarScanIndex scan, boolean multiVersion) {
+    ColumnarCursor(Session session, ColumnarIndex theIndex, boolean multiVersion) {
         this.session = session;
-        this.scan = scan;
+        this.theIndex = theIndex;
         this.multiVersion = multiVersion;
         if (multiVersion) {
-            delta = scan.getDelta();
+            delta = theIndex.getDelta();
         }
         row = null;
     }
@@ -58,9 +57,9 @@ public class ColumnarScanCursor implements Cursor {
                         continue;
                     }
                 } else {
-                    row = scan.getNextRow(row);
+                    row = theIndex.getNextRow(row);
                     if (row != null && row.getSessionId() != 0 &&
-                            row.getSessionId() != session.getId()) {
+			row.getSessionId() != session.getId()) {
                         continue;
                     }
                 }
@@ -68,7 +67,7 @@ public class ColumnarScanCursor implements Cursor {
             }
             return row != null;
         }
-        row = scan.getNextRow(row);
+        while ((row = theIndex.getNextRow(row)) == ColumnarIndex.TOMBSTONE) { };
         return row != null;
     }
 

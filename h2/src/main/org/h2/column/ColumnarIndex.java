@@ -1,6 +1,5 @@
 package org.h2.column;
 
-import org.h2.index.ScanIndex;
 import org.h2.table.IndexColumn;
 import org.h2.index.IndexType;
 import org.h2.result.Row;
@@ -18,6 +17,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.LinkedHashMap;
 import org.h2.api.ErrorCode;
 import org.h2.engine.Constants;
@@ -35,34 +35,13 @@ import org.h2.util.New;
 
 import java.util.logging.Logger;
 
-    /*
-//HashMap<R, HashMap<C, V>
-
-    private class ColumnarList extends ArrayList {
-
-	private Map<String,List> columnStore = new LinkedHashMap<String,List>();
-	private String[] columnNames;
-	
-	public ColumnarList(String[] columnNames) {
-	    super();
-	    this.columnNames = columnNames;
-	}
-
-	@Override
-	public boolean add(E e) {
-	    Row r = (Row) e;
-	    
-	}
-    }
-    */    
-
 /**
  * The scan index is not really an 'index' in the strict sense, because it can
  * not be used for direct lookup. It can only be used to iterate over all rows
  * of a table. Each regular table has one such object, even if no primary key or
  * indexes are defined.
  */
-public class ColumnarScanIndex extends BaseIndex {
+public class ColumnarIndex extends BaseIndex {
     Logger log = Logger.getLogger(ColumnarTable.class.getName());
 
     private final ColumnarTable tableData;
@@ -73,14 +52,26 @@ public class ColumnarScanIndex extends BaseIndex {
     private long rowCount;
     private HashSet<Row> delta;  // used for MVCC support
 
+    private long nextKey = 0;
     private ArrayList<Row> rows = New.arrayList();  // row-wise storage
     private String[] columnNames = null;
     private Map<String,List<Value>> columnStore = new LinkedHashMap<String,List<Value>>();  // columnar storage
+    private Set<Long> tombstoneKeys = new HashSet<Long>();
+    public static final Row TOMBSTONE = new RowImpl(null, 0);  // singleton tombstone marker
+    static { TOMBSTONE.setKey(-999); }
     
-    public ColumnarScanIndex(ColumnarTable table, int id, IndexColumn[] columns,
-			     IndexType indexType) {
+    public ColumnarIndex(ColumnarTable table, int id, IndexColumn[] columns,
+			 IndexType indexType) {
 
-	log.info("ColumnarScanIndex() - table: " + table);
+	log.info("ColumnarIndex() - table: " + table);
+
+	// store column names, used as keys for the columnar store
+	Column[] cols = table.getColumns();
+	columnNames = new String[cols.length];
+	for (int i = 0; i < cols.length; i++) {
+	    columnNames[i] = cols[i].getName();
+	    columnStore.put(columnNames[i], new ArrayList<Value>());  // initialize columnStore
+	}
 	
         initBaseIndex(table, id, table.getName() + "_DATA", columns, indexType);
         if (database.isMultiVersion()) {
@@ -126,16 +117,18 @@ public class ColumnarScanIndex extends BaseIndex {
     public Row getRow(Session session, long key) {
         //return rows.get((int) key);
 
-	if (columnNames == null) {
-	    columnNames = (String[]) columnStore.keySet().toArray();
+	if (key >= rowCount) {
+	    return null;
+	} else if (tombstoneKeys.contains(key)) {
+	    return TOMBSTONE;  // signal to cursor to skip this row
 	}
-
+	
 	// construct a row from our columnar values
 	Value[] data = new Value[columnNames.length];
-	log.fine("getRow() - key: " + key);
+	log.info("getRow() - key: " + key);
 	for (int i = 0; i < columnNames.length; i++) {
 	    data[i] = columnStore.get(columnNames[i]).get((int) key);
-	    log.fine("getRow() - column: " + columnNames[i] + " / " + i + ", val: " + data[i]);
+	    log.info("getRow() - column: " + columnNames[i] + " / " + i + ", val: " + data[i]);
 	}
 
 	Row r = new RowImpl(data, 0 /* memory */);
@@ -145,21 +138,20 @@ public class ColumnarScanIndex extends BaseIndex {
 
     @Override
     public void add(Session session, Row row) {
-	/*
-        // in-memory
-        if (firstFree == -1) {
-            int key = rows.size();
-            row.setKey(key);
-            rows.add(row);
-        } else {
-            long key = firstFree;
-            Row free = rows.get((int) key);
-            firstFree = free.getKey();
-            row.setKey(key);
-            rows.set((int) key, row);
-        }
-	*/
 
+	row.setKey(nextKey);
+	Value[] vals = row.getValueList();
+	for (int i = 0; i < columnNames.length; i++) {
+	    columnStore.get(columnNames[i]).add(vals[i]);
+	}
+	nextKey++;
+
+	// debug output, print the full column store after adding this row
+	StringBuffer sb = new StringBuffer("columnStore: [\n");
+	columnStore.forEach((k,v) -> sb.append("  " + k + ": " + v + "\n"));
+	sb.append("]");
+	log.info(sb.toString());
+	
         row.setDeleted(false);
 	
         if (database.isMultiVersion()) {
@@ -198,21 +190,13 @@ public class ColumnarScanIndex extends BaseIndex {
 
     @Override
     public void remove(Session session, Row row) {
-        // in-memory
-        if (!database.isMultiVersion() && rowCount == 1) {
-            rows = New.arrayList();
-            firstFree = -1;
-        } else {
-            Row free = session.createRow(null, 1);
-            free.setKey(firstFree);
-            long key = row.getKey();
-            if (rows.size() <= key) {
-                throw DbException.get(ErrorCode.ROW_NOT_FOUND_WHEN_DELETING_1,
-                        rows.size() + ": " + key);
-            }
-            rows.set((int) key, free);
-            firstFree = key;
-        }
+
+	long key = row.getKey();
+	tombstoneKeys.add(key);
+	for (int i = 0; i < columnNames.length; i++) {
+	    columnStore.get(columnNames[i]).set((int) key, null);
+	}
+	
         if (database.isMultiVersion()) {
             // if storage is null, the delete flag is not yet set
             row.setDeleted(true);
@@ -230,7 +214,7 @@ public class ColumnarScanIndex extends BaseIndex {
 
     @Override
     public Cursor find(Session session, SearchRow first, SearchRow last) {
-        return new ColumnarScanCursor(session, this, database.isMultiVersion());
+        return new ColumnarCursor(session, this, database.isMultiVersion());
     }
 
     @Override
@@ -253,12 +237,16 @@ public class ColumnarScanIndex extends BaseIndex {
     }
 
     /**
-     * Get the next row that is stored after this row.
+     * Get the next row that is stored after the provided row.
      *
      * @param row the current row or null to start the scan
      * @return the next row or null if there are no more rows
      */
     Row getNextRow(Row row) {
+	long key = row == null ? -1 : row.getKey();
+	return getRow(null, key + 1);
+	
+	/*
         long key;
         if (row == null) {
             key = -1;
@@ -275,6 +263,7 @@ public class ColumnarScanIndex extends BaseIndex {
                 return row;
             }
         }
+	*/
     }
 
     @Override
