@@ -48,7 +48,6 @@ public class ColumnarIndex extends BaseIndex {
     private int rowCountDiff;
     private final HashMap<Integer, Integer> sessionRowCount;
     
-    private long firstFree = -1;
     private long rowCount;
     private HashSet<Row> delta;  // used for MVCC support
 
@@ -56,9 +55,10 @@ public class ColumnarIndex extends BaseIndex {
     private ArrayList<Row> rows = New.arrayList();  // row-wise storage
     private String[] columnNames = null;
     private Map<String,List<Value>> columnStore = new LinkedHashMap<String,List<Value>>();  // columnar storage
+
     private Set<Long> tombstoneKeys = new HashSet<Long>();
     public static final Row TOMBSTONE = new RowImpl(null, 0);  // singleton tombstone marker
-    static { TOMBSTONE.setKey(-999); }
+    static { TOMBSTONE.setKey(-9999); }
     
     public ColumnarIndex(ColumnarTable table, int id, IndexColumn[] columns,
 			 IndexType indexType) {
@@ -89,9 +89,12 @@ public class ColumnarIndex extends BaseIndex {
 
     @Override
     public void truncate(Session session) {
-        //rows = New.arrayList();
+
+	log.info("ColumnarIndex() - truncate()");
+	nextKey = 0;
 	columnStore = new LinkedHashMap<String,List<Value>>();
-        firstFree = -1;
+	tombstoneKeys = new HashSet<Long>();
+	
         if (tableData.getContainsLargeObject() && tableData.isPersistData()) {
             database.getLobStorage().removeAllForTable(table.getId());
         }

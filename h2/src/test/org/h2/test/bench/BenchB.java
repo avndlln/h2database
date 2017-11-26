@@ -73,6 +73,7 @@ public class BenchB implements Bench, Runnable {
         db.dropTable("TELLERS");
         db.dropTable("ACCOUNTS");
         db.dropTable("HISTORY");
+
         String[] create = {
                 "CREATE TABLE BRANCHES(" +
                         "BID INT NOT NULL PRIMARY KEY, " +
