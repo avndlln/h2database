@@ -67,7 +67,11 @@ public class ColumnarCursor implements Cursor {
             }
             return row != null;
         }
-        while ((row = theIndex.getNextRow(row)) == ColumnarIndex.TOMBSTONE) { };
+        //while ((row = theIndex.getNextRow(row)) == ColumnarIndex.TOMBSTONE) { };
+	row = theIndex.getNextRow(row);
+	while (row != null && row.getKey() == ColumnarIndex.TOMBSTONE.getKey()) {
+	    row = theIndex.getNextRow(row);
+	}
         return row != null;
     }
 
