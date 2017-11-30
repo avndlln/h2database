@@ -70,7 +70,7 @@ public class ColumnarTable extends RegularTable {
     public ColumnarTable(CreateTableData data) {
         super(data);
 
-	log.info("ColumnarTable() - table name: " + data.tableName);
+	log.info("ColumnarTable() - table name: " + data.tableName + ", database: " + database);
 	
         nextAnalyze = database.getSettings().analyzeAuto;
         this.isHidden = data.isHidden;

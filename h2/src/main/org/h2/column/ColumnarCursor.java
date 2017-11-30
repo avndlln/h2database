@@ -12,10 +12,13 @@ import org.h2.result.Row;
 import org.h2.result.SearchRow;
 import org.h2.index.Cursor;
 
+import java.util.logging.Logger;
+
 /**
  * The cursor implementation for the columnar index.
  */
 public class ColumnarCursor implements Cursor {
+    Logger log = Logger.getLogger(ColumnarCursor.class.getName());
     private final ColumnarIndex theIndex;
     private Row row;
     private final Session session;
@@ -68,10 +71,14 @@ public class ColumnarCursor implements Cursor {
             return row != null;
         }
         //while ((row = theIndex.getNextRow(row)) == ColumnarIndex.TOMBSTONE) { };
+
 	row = theIndex.getNextRow(row);
 	while (row != null && row.getKey() == ColumnarIndex.TOMBSTONE.getKey()) {
 	    row = theIndex.getNextRow(row);
 	}
+
+	log.info("next() - row: " + row);
+	
         return row != null;
     }
 

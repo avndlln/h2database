@@ -120,7 +120,7 @@ public class ColumnarIndex extends BaseIndex {
     public Row getRow(Session session, long key) {
         //return rows.get((int) key);
 
-	if (key >= rowCount) {
+	if (key >= nextKey) {
 	    return null;
 	} else if (tombstoneKeys.contains(key)) {
 	    return TOMBSTONE;  // signal to cursor to skip this row
@@ -246,27 +246,21 @@ public class ColumnarIndex extends BaseIndex {
      * @return the next row or null if there are no more rows
      */
     Row getNextRow(Row row) {
-	long key = row == null ? -1 : row.getKey();
-	return getRow(null, key + 1);
-	
 	/*
-        long key;
-        if (row == null) {
-            key = -1;
-        } else {
-            key = row.getKey();
-        }
+	long key = row == null ? -1 : row.getKey();
+	log.info("getNextRow(" + row + ") - key: " + key);
+	return getRow(null, key + 1);
+	*/	
+
+        long key = row == null ? -1 : row.getKey();
         while (true) {
             key++;
-            if (key >= rows.size()) {
-                return null;
-            }
-            row = rows.get((int) key);
-            if (!row.isEmpty()) {
+            row = getRow(null, key);
+	    if (row == null) { return row; }
+            if (!row.isEmpty() && row != TOMBSTONE) {
                 return row;
             }
         }
-	*/
     }
 
     @Override
