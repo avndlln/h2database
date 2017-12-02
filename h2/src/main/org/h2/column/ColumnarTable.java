@@ -53,10 +53,8 @@ public class ColumnarTable extends RegularTable {
     private volatile Session lockExclusiveSession;
     private HashSet<Session> lockSharedSessions = New.hashSet();
 
-    /**
-     * The queue of sessions waiting to lock the table. It is a FIFO queue to
-     * prevent starvation, since Java's synchronized locking is biased.
-     */
+    // The queue of sessions waiting to lock the table. It is a FIFO queue to
+    // prevent starvation, since Java's synchronized locking is biased.
     private final ArrayDeque<Session> waitingSessions = new ArrayDeque<>();
     private final Trace traceLock;
     private final ArrayList<Index> indexes = New.arrayList();
@@ -70,6 +68,15 @@ public class ColumnarTable extends RegularTable {
     public ColumnarTable(CreateTableData data) {
         super(data);
 
+	while (indexes.size() > 0) {  // remove default scan/main index, replace with our own
+	    Index index = indexes.get(1);
+	    log.info("ColumnarTable() - removing index: " + index.getName());
+	    if (index.getName() != null) {
+		database.removeSchemaObject(data.session, index);
+	    }
+	    indexes.remove(index);
+	}
+	
 	log.info("ColumnarTable() - table name: " + data.tableName + ", database: " + database);
 	
         nextAnalyze = database.getSettings().analyzeAuto;
@@ -81,10 +88,10 @@ public class ColumnarTable extends RegularTable {
         }
         if (data.persistData && database.isPersistent()) {
             mainIndex = new PageDataIndex(this, data.id,
-                    IndexColumn.wrap(getColumns()),
-                    IndexType.createScan(data.persistData),
-                    data.create, data.session);
-            scanIndex = mainIndex;
+					  IndexColumn.wrap(getColumns()),
+					  IndexType.createScan(data.persistData),
+					  data.create, data.session);
+	    scanIndex = mainIndex;
         } else {
             mainIndex = null;
 	    // columnar index implementation
@@ -93,7 +100,10 @@ public class ColumnarTable extends RegularTable {
         }
         indexes.add(scanIndex);
         traceLock = database.getTrace(Trace.LOCK);
+
+	log.info("ColumnarTable() - index count: " + indexes.size());
     }
+
 
     @Override
     public void close(Session session) {
@@ -154,12 +164,57 @@ public class ColumnarTable extends RegularTable {
     }
 
     @Override
-    public void commit(short operation, Row row) {
-        lastModificationId = database.getNextModificationDataId();
-        for (int i = 0, size = indexes.size(); i < size; i++) {
-            Index index = indexes.get(i);
-            index.commit(operation, row);
+    public void removeRow(Session session, Row row) {
+        if (database.isMultiVersion()) {
+            if (row.isDeleted()) {
+                throw DbException.get(ErrorCode.CONCURRENT_UPDATE_1, getName());
+            }
+            int old = row.getSessionId();
+            int newId = session.getId();
+            if (old == 0) {
+                row.setSessionId(newId);
+            } else if (old != newId) {
+                throw DbException.get(ErrorCode.CONCURRENT_UPDATE_1, getName());
+            }
         }
+        lastModificationId = database.getNextModificationDataId();
+        int i = indexes.size() - 1;
+        try {
+            for (; i >= 0; i--) {
+                Index index = indexes.get(i);
+                index.remove(session, row);
+                checkRowCount(session, index, -1);
+            }
+            rowCount--;
+        } catch (Throwable e) {
+            try {
+                while (++i < indexes.size()) {
+                    Index index = indexes.get(i);
+                    index.add(session, row);
+                    checkRowCount(session, index, 0);
+                }
+            } catch (DbException e2) {
+                // this could happen, for example on failure in the storage
+                // but if that is not the case it means there is something wrong
+                // with the database
+                trace.error(e2, "could not undo operation");
+                throw e2;
+            }
+            throw DbException.convert(e);
+        }
+        analyzeIfRequired(session);
+    }
+    
+    private void analyzeIfRequired(Session session) {
+        if (nextAnalyze == 0 || nextAnalyze > changesSinceAnalyze++) {
+            return;
+        }
+        changesSinceAnalyze = 0;
+        int n = 2 * nextAnalyze;
+        if (n > 0) {
+            nextAnalyze = n;
+        }
+        session.markTableForAnalyze(this);
     }
 
     private void checkRowCount(Session session, Index index, int offset) {
@@ -177,7 +232,17 @@ public class ColumnarTable extends RegularTable {
 
     @Override
     public Index getScanIndex(Session session) {
-        return indexes.get(0);
+        return scanIndex;
+    }
+    
+    
+    @Override
+    public void commit(short operation, Row row) {
+        lastModificationId = database.getNextModificationDataId();
+        for (int i = 0, size = indexes.size(); i < size; i++) {
+            Index index = indexes.get(i);
+            index.commit(operation, row);
+        }
     }
 
     @Override
@@ -189,16 +254,30 @@ public class ColumnarTable extends RegularTable {
         }
         return null;
     }
-
+    
     @Override
     public ArrayList<Index> getIndexes() {
         return indexes;
     }
 
     @Override
+    public void removeChildrenAndResources(Session session) {
+	log.info("ColumnarTable() - index count: " + indexes.size() + ", database: " + database);
+	try {
+	    super.removeChildrenAndResources(session);
+	} catch (Exception e) {
+	    log.fine("removeChildrenAndResources() - " + e.getMessage());
+	}
+    }
+    
+    /*
+    @Override
     public Index addIndex(Session session, String indexName, int indexId,
             IndexColumn[] cols, IndexType indexType, boolean create,
             String indexComment) {
+
+	log.info("addIndex() - " + indexName + " / " + indexType);
+
         if (indexType.isPrimaryKey()) {
             for (IndexColumn c : cols) {
                 Column column = c.column;
@@ -226,14 +305,11 @@ public class ColumnarTable extends RegularTable {
             }
             if (mainIndexColumn != -1) {
                 mainIndex.setMainIndexColumn(mainIndexColumn);
-                index = new PageDelegateIndex(this, indexId, indexName,
-                        indexType, mainIndex, create, session);
+                index = new ColumnarPageDelegateIndex(this, indexId, indexName, indexType, mainIndex, create, session);
             } else if (indexType.isSpatial()) {
-                index = new SpatialTreeIndex(this, indexId, indexName, cols,
-                        indexType, true, create, session);
+                index = null; //new SpatialTreeIndex(this, indexId, indexName, cols, indexType, true, create, session);
             } else {
-                index = new PageBtreeIndex(this, indexId, indexName, cols,
-                        indexType, create, session);
+                index = new ColumnarPageBtreeIndex(this, indexId, indexName, cols, indexType, create, session);
             }
         } else {
             if (indexType.isHash()) {
@@ -242,21 +318,18 @@ public class ColumnarTable extends RegularTable {
                             "hash indexes may index only one column");
                 }
                 if (indexType.isUnique()) {
-                    index = new HashIndex(this, indexId, indexName, cols,
-                            indexType);
+                    index = new ColumnarHashIndex(this, indexId, indexName, cols, indexType);
                 } else {
-                    index = new NonUniqueHashIndex(this, indexId, indexName,
-                            cols, indexType);
+                    index = null; //new NonUniqueHashIndex(this, indexId, indexName, cols, indexType);
                 }
             } else if (indexType.isSpatial()) {
-                index = new SpatialTreeIndex(this, indexId, indexName, cols,
-                        indexType, false, true, session);
+                index = null; //new SpatialTreeIndex(this, indexId, indexName, cols, indexType, false, true, session);
             } else {
-                index = new TreeIndex(this, indexId, indexName, cols, indexType);
+                index = new ColumnarTreeIndex(this, indexId, indexName, cols, indexType);
             }
         }
         if (database.isMultiVersion()) {
-            index = new MultiVersionIndex(index, this);
+            index = null; //new MultiVersionIndex(index, this);
         }
         if (index.needRebuild() && rowCount > 0) {
             try {
@@ -369,48 +442,6 @@ public class ColumnarTable extends RegularTable {
     }
 
     @Override
-    public void removeRow(Session session, Row row) {
-        if (database.isMultiVersion()) {
-            if (row.isDeleted()) {
-                throw DbException.get(ErrorCode.CONCURRENT_UPDATE_1, getName());
-            }
-            int old = row.getSessionId();
-            int newId = session.getId();
-            if (old == 0) {
-                row.setSessionId(newId);
-            } else if (old != newId) {
-                throw DbException.get(ErrorCode.CONCURRENT_UPDATE_1, getName());
-            }
-        }
-        lastModificationId = database.getNextModificationDataId();
-        int i = indexes.size() - 1;
-        try {
-            for (; i >= 0; i--) {
-                Index index = indexes.get(i);
-                index.remove(session, row);
-                checkRowCount(session, index, -1);
-            }
-            rowCount--;
-        } catch (Throwable e) {
-            try {
-                while (++i < indexes.size()) {
-                    Index index = indexes.get(i);
-                    index.add(session, row);
-                    checkRowCount(session, index, 0);
-                }
-            } catch (DbException e2) {
-                // this could happen, for example on failure in the storage
-                // but if that is not the case it means there is something wrong
-                // with the database
-                trace.error(e2, "could not undo operation");
-                throw e2;
-            }
-            throw DbException.convert(e);
-        }
-        analyzeIfRequired(session);
-    }
-
-    @Override
     public void truncate(Session session) {
         lastModificationId = database.getNextModificationDataId();
         for (int i = indexes.size() - 1; i >= 0; i--) {
@@ -419,18 +450,6 @@ public class ColumnarTable extends RegularTable {
         }
         rowCount = 0;
         changesSinceAnalyze = 0;
-    }
-
-    private void analyzeIfRequired(Session session) {
-        if (nextAnalyze == 0 || nextAnalyze > changesSinceAnalyze++) {
-            return;
-        }
-        changesSinceAnalyze = 0;
-        int n = 2 * nextAnalyze;
-        if (n > 0) {
-            nextAnalyze = n;
-        }
-        session.markTableForAnalyze(this);
     }
 
     @Override
@@ -682,11 +701,8 @@ public class ColumnarTable extends RegularTable {
         }
     }
 
-    /**
-     * Set the row count of this table.
-     *
-     * @param count the row count
-     */
+    // Set the row count of this table.
+    // @param count the row count
     public void setRowCount(long count) {
         this.rowCount = count;
     }
@@ -801,5 +817,6 @@ public class ColumnarTable extends RegularTable {
         }
         return rowIdColumn;
     }
-
+    */
+    
 }
