@@ -64,7 +64,7 @@ public class ColumnarIndex extends BaseIndex {
     public ColumnarIndex(ColumnarTable table, int id, IndexColumn[] columns,
 			 IndexType indexType) {
 
-	if ("on".equalsIgnoreCase(System.getenv("H2_DEBUG"))) {
+	if ("on".equalsIgnoreCase(System.getenv("H2_560_DEBUG"))) {
 	    debugOn = true;
 	}
 	
@@ -126,7 +126,9 @@ public class ColumnarIndex extends BaseIndex {
 	
 	// construct a row from our columnar values
 	Value[] data = new Value[columnNames.length];
-	if (debugOn) { log.info("getRow() - key: " + key); }
+	if (debugOn) {
+	    log.info("getRow() - key: " + key);
+	}
 	for (int i = 0; i < columnNames.length; i++) {
 	    data[i] = columnStore.get(columnNames[i]).get((int) key);
 	    if (debugOn) { log.info("getRow() - column: " + columnNames[i] + " / " + i + ", val: " + data[i]); }
@@ -147,11 +149,13 @@ public class ColumnarIndex extends BaseIndex {
 	}
 	nextKey++;
 
-	// debug output, print the full column store after adding this row
-	StringBuffer sb = new StringBuffer("columnStore: [\n");
-	columnStore.forEach((k,v) -> sb.append("  " + k + ": " + v + "\n"));
-	sb.append("]");
-	if (debugOn) { log.info(sb.toString()); }
+	if (debugOn) {
+	    // debug output, print the full column store after adding this row
+	    StringBuffer sb = new StringBuffer("columnStore: [\n");
+	    columnStore.forEach((k,v) -> sb.append("  " + k + ": " + v + "\n"));
+	    sb.append("]");
+	    log.info(sb.toString());
+	}
 	
         row.setDeleted(false);
 	
@@ -244,12 +248,6 @@ public class ColumnarIndex extends BaseIndex {
      * @return the next row or null if there are no more rows
      */
     Row getNextRow(Row row) {
-	/*
-	long key = row == null ? -1 : row.getKey();
-	log.info("getNextRow(" + row + ") - key: " + key);
-	return getRow(null, key + 1);
-	*/	
-
         long key = row == null ? -1 : row.getKey();
         while (true) {
             key++;

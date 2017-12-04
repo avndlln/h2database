@@ -7,6 +7,7 @@ import org.h2.index.IndexType;
 import org.h2.table.IndexColumn;
 import org.h2.table.RegularTable;
 import org.h2.index.Index;
+import org.h2.result.Row;
 import java.util.logging.Logger;
 
 /**
@@ -20,11 +21,17 @@ public class ColumnarTable extends RegularTable {
     Logger log = Logger.getLogger(ColumnarTable.class.getName());
 
     private final String tableName;
+    private boolean debugOn = false;
     
     public ColumnarTable(CreateTableData data) {
         super(data);
 
 	tableName = data.tableName;
+
+	// enable 560-specific debug logging, if environment variable is set
+	if ("on".equalsIgnoreCase("H2_560_DEBUG")) {
+	    debugOn = true;
+	}
 	
 	log.info("ColumnarTable() - table name: " + tableName + ", database: " + database);
 
@@ -38,8 +45,24 @@ public class ColumnarTable extends RegularTable {
     public Index addIndex(Session session, String indexName, int indexId,
 			  IndexColumn[] cols, IndexType indexType, boolean create,
 			  String indexComment) {
-	log.info(tableName + "/addIndex() - index name: " + indexName + ", PK? " + indexType.isPrimaryKey());
+	log.info(tableName + "::addIndex() - index name: " + indexName + ", isPrimaryKey? " + indexType.isPrimaryKey());
 	return super.addIndex(session, indexName, indexId, cols, indexType, create, indexComment);
     }
 
+    @Override
+    public void addRow(Session session, Row row) {
+	if (debugOn) {
+	    log.info(tableName + "::addRow() - " + row);
+	}
+	super.addRow(session, row);
+    }
+
+    @Override
+    public void removeRow(Session session, Row row) {
+	if (debugOn) {
+	    log.info(tableName + "::removeRow() - " + row);
+	}
+	super.removeRow(session, row);
+    }
+    
 }
