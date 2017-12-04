@@ -180,6 +180,15 @@ public class RegularTable extends TableBase {
         return indexes.get(0);
     }
 
+    protected void setScanIndex(Index i) {
+	this.scanIndex = i;
+	if (indexes.size() == 0) {
+	    indexes.add(this.scanIndex);
+	} else {
+	    indexes.set(0, this.scanIndex);
+	}
+    }
+    
     @Override
     public Index getUniqueIndex() {
         for (Index idx : indexes) {

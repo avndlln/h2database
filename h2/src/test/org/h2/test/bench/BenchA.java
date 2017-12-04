@@ -116,13 +116,16 @@ public class BenchA implements Bench {
         database.start(this, "Transactions");
         database.openConnection();
         processTransactions();
+	database.logMemory(this, "Memory Usage");
         database.closeConnection();
         database.end();
 
+	/*
         database.openConnection();
         processTransactions();
         database.logMemory(this, "Memory Usage");
         database.closeConnection();
+	*/
 
     }
 

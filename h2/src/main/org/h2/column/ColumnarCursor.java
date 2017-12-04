@@ -1,8 +1,3 @@
-/*
- * Copyright 2004-2014 H2 Group. Multiple-Licensed under the MPL 2.0,
- * and the EPL 1.0 (http://h2database.com/html/license.html).
- * Initial Developer: H2 Group
- */
 package org.h2.column;
 
 import java.util.Iterator;
@@ -15,7 +10,8 @@ import org.h2.index.Cursor;
 import java.util.logging.Logger;
 
 /**
- * The cursor implementation for the columnar index.
+ * Cursor implementation for the columnar index.
+ *
  */
 public class ColumnarCursor implements Cursor {
     Logger log = Logger.getLogger(ColumnarCursor.class.getName());
@@ -70,8 +66,8 @@ public class ColumnarCursor implements Cursor {
             }
             return row != null;
         }
-        //while ((row = theIndex.getNextRow(row)) == ColumnarIndex.TOMBSTONE) { };
 
+	// get the next non-tombstone row
 	row = theIndex.getNextRow(row);
 	while (row != null && row.getKey() == ColumnarIndex.TOMBSTONE.getKey()) {
 	    row = theIndex.getNextRow(row);

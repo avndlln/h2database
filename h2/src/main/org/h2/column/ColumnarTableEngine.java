@@ -13,7 +13,7 @@ public class ColumnarTableEngine implements TableEngine {
 
         @Override
 	public TableBase createTable(CreateTableData data) {
-	    log.info("createTable(" + data + ")");
+	    log.info("createTable(" + data.tableName + ")");
 	    return new ColumnarTable(data);
 	}
     

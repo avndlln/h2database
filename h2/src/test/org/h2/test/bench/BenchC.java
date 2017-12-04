@@ -167,7 +167,7 @@ public class BenchC implements Bench {
             " SUCCESSFUL INT,\n" +
             " NOW TIMESTAMP)" };
 
-    int warehouses = 2;
+    int warehouses = 1;
     int items = 10000;
     int districtsPerWarehouse = 10;
     int customersPerDistrict = 300;
@@ -551,14 +551,18 @@ public class BenchC implements Bench {
             BenchCThread process = new BenchCThread(database, this, random, i);
             process.process();
         }
+	database.logMemory(this, "Memory Usage");
         database.closeConnection();
         database.end();
 
+	/*
         database.openConnection();
         BenchCThread process = new BenchCThread(database, this, random, 0);
-        process.process();
+        process.process();	
         database.logMemory(this, "Memory Usage");
         database.closeConnection();
+	*/
+
     }
 
     @Override

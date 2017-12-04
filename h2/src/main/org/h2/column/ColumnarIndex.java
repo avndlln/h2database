@@ -7,9 +7,7 @@ import org.h2.result.RowImpl;
 import org.h2.engine.Session;
 import org.h2.index.Cursor;
 import org.h2.value.Value;
-
 import org.h2.index.BaseIndex;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -36,10 +34,11 @@ import org.h2.util.New;
 import java.util.logging.Logger;
 
 /**
- * The scan index is not really an 'index' in the strict sense, because it can
- * not be used for direct lookup. It can only be used to iterate over all rows
- * of a table. Each regular table has one such object, even if no primary key or
- * indexes are defined.
+ * Columnar "scan" index. Although it is termed an index, in H2, a scan index is
+ * a simple iterator and cannot be used for random lookup of rows.  Every table in H2
+ * has a single scan index, which controls the physical storage of records.
+ * 
+ * @author avondoll
  */
 public class ColumnarIndex extends BaseIndex {
     Logger log = Logger.getLogger(ColumnarTable.class.getName());
@@ -59,10 +58,16 @@ public class ColumnarIndex extends BaseIndex {
     private Set<Long> tombstoneKeys = new HashSet<Long>();
     public static final Row TOMBSTONE = new RowImpl(null, 0);  // singleton tombstone marker
     static { TOMBSTONE.setKey(-9999); }
+
+    boolean debugOn = false; 
     
     public ColumnarIndex(ColumnarTable table, int id, IndexColumn[] columns,
 			 IndexType indexType) {
 
+	if ("on".equalsIgnoreCase(System.getenv("H2_DEBUG"))) {
+	    debugOn = true;
+	}
+	
 	log.info("ColumnarIndex() - table: " + table);
 
 	// store column names, used as keys for the columnar store
@@ -112,14 +117,7 @@ public class ColumnarIndex extends BaseIndex {
     }
 
     @Override
-    public void close(Session session) {
-        // nothing to do
-    }
-
-    @Override
     public Row getRow(Session session, long key) {
-        //return rows.get((int) key);
-
 	if (key >= nextKey) {
 	    return null;
 	} else if (tombstoneKeys.contains(key)) {
@@ -128,13 +126,13 @@ public class ColumnarIndex extends BaseIndex {
 	
 	// construct a row from our columnar values
 	Value[] data = new Value[columnNames.length];
-	log.info("getRow() - key: " + key);
+	if (debugOn) { log.info("getRow() - key: " + key); }
 	for (int i = 0; i < columnNames.length; i++) {
 	    data[i] = columnStore.get(columnNames[i]).get((int) key);
-	    log.info("getRow() - column: " + columnNames[i] + " / " + i + ", val: " + data[i]);
+	    if (debugOn) { log.info("getRow() - column: " + columnNames[i] + " / " + i + ", val: " + data[i]); }
 	}
 
-	Row r = new RowImpl(data, 0 /* memory */);
+	Row r = new RowImpl(data, 0);  // 0 => in-memory
 	r.setKey(key);
 	return r;
     }
@@ -153,7 +151,7 @@ public class ColumnarIndex extends BaseIndex {
 	StringBuffer sb = new StringBuffer("columnStore: [\n");
 	columnStore.forEach((k,v) -> sb.append("  " + k + ": " + v + "\n"));
 	sb.append("]");
-	log.info(sb.toString());
+	if (debugOn) { log.info(sb.toString()); }
 	
         row.setDeleted(false);
 	
@@ -304,12 +302,12 @@ public class ColumnarIndex extends BaseIndex {
 
     @Override
     public long getRowCountApproximation() {
-        return rowCount;
+        return rowCount;  // exact count
     }
 
     @Override
     public long getDiskSpaceUsed() {
-        return 0;
+        return 0;  // this implementation supports in-memory usage only
     }
 
     @Override
@@ -317,4 +315,9 @@ public class ColumnarIndex extends BaseIndex {
         return table.getSQL() + ".tableScan";
     }
 
+    @Override
+    public void close(Session session) {
+        // nothing to do
+    }
+    
 }
