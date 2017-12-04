@@ -14,7 +14,7 @@ import java.util.logging.Logger;
  * tuple-oriented storage. Actual data storage takes place in the ColumnarIndex class,
  * this is simply a wrapper class.
  * 
- * @author avondoll
+ * @author csc560team1
  */
 public class ColumnarTable extends RegularTable {
     Logger log = Logger.getLogger(ColumnarTable.class.getName());
@@ -41,5 +41,5 @@ public class ColumnarTable extends RegularTable {
 	log.info(tableName + "/addIndex() - index name: " + indexName + ", PK? " + indexType.isPrimaryKey());
 	return super.addIndex(session, indexName, indexId, cols, indexType, create, indexComment);
     }
-    
+
 }

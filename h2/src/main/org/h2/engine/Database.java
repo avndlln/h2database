@@ -2495,6 +2495,7 @@ public class Database implements DataHandler {
     }
 
     public PageStore getPageStore() {
+
         if (dbSettings.mvStore) {
             if (mvStore == null) {
                 mvStore = MVTableEngine.init(this);

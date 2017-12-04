@@ -7,14 +7,26 @@ import org.h2.command.ddl.CreateTableData;
 
 import java.util.logging.Logger;
 
+/**
+ *
+ * @author csc560team1
+ */
 public class ColumnarTableEngine implements TableEngine {
 
     private Logger log = Logger.getLogger(ColumnarTableEngine.class.getName());
 
-        @Override
-	public TableBase createTable(CreateTableData data) {
-	    log.info("createTable(" + data.tableName + ")");
-	    return new ColumnarTable(data);
-	}
+    private static ColumnarTable lastCreated = null;
+    
+    @Override
+    public TableBase createTable(CreateTableData data) {
+	log.info("createTable(" + data.tableName + ")");
+	lastCreated = new ColumnarTable(data);
+	return lastCreated;
+    }
+
+    // used for detailed unit testing
+    public static ColumnarTable getLastCreated() {
+	return lastCreated;
+    }
     
 }

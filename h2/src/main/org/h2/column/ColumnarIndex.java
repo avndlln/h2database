@@ -38,7 +38,7 @@ import java.util.logging.Logger;
  * a simple iterator and cannot be used for random lookup of rows.  Every table in H2
  * has a single scan index, which controls the physical storage of records.
  * 
- * @author avondoll
+ * @author csc560team1
  */
 public class ColumnarIndex extends BaseIndex {
     Logger log = Logger.getLogger(ColumnarTable.class.getName());
