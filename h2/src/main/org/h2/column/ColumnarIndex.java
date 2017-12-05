@@ -27,7 +27,6 @@ import org.h2.result.SearchRow;
 import org.h2.result.SortOrder;
 import org.h2.table.Column;
 import org.h2.table.IndexColumn;
-import org.h2.table.RegularTable;
 import org.h2.table.TableFilter;
 import org.h2.util.New;
 
@@ -38,12 +37,12 @@ import java.util.logging.Logger;
  * a simple iterator and cannot be used for random lookup of rows.  Every table in H2
  * has a single scan index, which controls the physical storage of records.
  * 
- * @author csc560team1
  */
 public class ColumnarIndex extends BaseIndex {
     Logger log = Logger.getLogger(ColumnarTable.class.getName());
 
     private final ColumnarTable tableData;
+    private final String tableName;
     private int rowCountDiff;
     private final HashMap<Integer, Integer> sessionRowCount;
     
@@ -64,11 +63,13 @@ public class ColumnarIndex extends BaseIndex {
     public ColumnarIndex(ColumnarTable table, int id, IndexColumn[] columns,
 			 IndexType indexType) {
 
+	tableName = table.getTableName();
+	
 	if ("on".equalsIgnoreCase(System.getenv("H2_560_DEBUG"))) {
 	    debugOn = true;
 	}
 	
-	log.info("ColumnarIndex() - table: " + table);
+	log.info("ColumnarIndex() - table: " + tableName);
 
 	// store column names, used as keys for the columnar store
 	Column[] cols = table.getColumns();
@@ -151,7 +152,7 @@ public class ColumnarIndex extends BaseIndex {
 
 	if (debugOn) {
 	    // debug output, print the full column store after adding this row
-	    StringBuffer sb = new StringBuffer("columnStore: [\n");
+	    StringBuffer sb = new StringBuffer("'"+ tableName +"' columnStore: [\n");
 	    columnStore.forEach((k,v) -> sb.append("  " + k + ": " + v + "\n"));
 	    sb.append("]");
 	    log.info(sb.toString());
@@ -241,12 +242,6 @@ public class ColumnarIndex extends BaseIndex {
         return rowCount;
     }
 
-    /**
-     * Get the next row that is stored after the provided row.
-     *
-     * @param row the current row or null to start the scan
-     * @return the next row or null if there are no more rows
-     */
     Row getNextRow(Row row) {
         long key = row == null ? -1 : row.getKey();
         while (true) {

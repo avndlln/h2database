@@ -8,8 +8,10 @@ import org.h2.command.ddl.CreateTableData;
 import java.util.logging.Logger;
 
 /**
+ * An H2 TableEngine which creates columnar tables upon request
+ * Columnar mode can be activated at runtime using the JDBC URL parameter:
+ *   ;DEFAULT_TABLE_ENGINE=org.h2.column.ColumnarTableEngine
  *
- * @author csc560team1
  */
 public class ColumnarTableEngine implements TableEngine {
 
