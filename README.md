@@ -1,4 +1,4 @@
-# Welcome to Columnar, the Java SQL database
+# Welcome to H2, the Java SQL database
 
 ## About this fork...
 
